@@ -1,9 +1,20 @@
 package com.wys.spring;
 
+import com.wys.spring.annotation.AutoWired;
+import com.wys.spring.annotation.Component;
+import com.wys.spring.annotation.ComponentScan;
+import com.wys.spring.annotation.Scope;
 import com.wys.spring.exception.NoBeanNamedException;
+import com.wys.spring.interfaces.BeanNameAware;
+import com.wys.spring.interfaces.BeanPostProcessor;
+import com.wys.spring.interfaces.InitializingBean;
 
+import java.beans.Introspector;
 import java.io.File;
+import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
 import java.net.URL;
+import java.util.ArrayList;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
@@ -16,9 +27,17 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class WysApplicationContext<T> {
 
+    /**
+     * 单例bean池
+     */
     private final Map<String, Object> singletonBeanMap = new ConcurrentHashMap<>();
 
+    /**
+     * bean定义池
+     */
     private final Map<String, BeanDefinition> beanDefinitionMap = new ConcurrentHashMap<>();
+
+    private final ArrayList<BeanPostProcessor> BeanPostProcessorList = new ArrayList<>();
     private Class<T> tClass;
 
 
@@ -36,6 +55,7 @@ public class WysApplicationContext<T> {
             ClassLoader classLoader = this.getClass().getClassLoader();
             // file:/D:/code/learn/spring/wysSpring/out/production/wysSpring/com/wys/service
             URL resource = classLoader.getResource(value);
+            assert resource != null;
             // 获取到了编译过后的class文件的目录
             // /D:/code/learn/spring/wysSpring/out/production/wysSpring/com/wys/service
             String file = resource.getFile();
@@ -53,8 +73,17 @@ public class WysApplicationContext<T> {
                             Class<?> aClass = classLoader.loadClass(name);
                             if (aClass.isAnnotationPresent(Component.class)) {
 
+                                //查看是否为BeanPostProcessor,如果是的话加入处理流程集合
+                                if (BeanPostProcessor.class.isAssignableFrom(aClass)) {
+                                    BeanPostProcessor postProcesses = (BeanPostProcessor) aClass.getConstructor().newInstance();
+                                    BeanPostProcessorList.add(postProcesses);
+                                }
+
+
                                 Component component = aClass.getAnnotation(Component.class);
-                                String beanName = component.value().equals("") ? getBeanDefaultName(aClass) : component.value();
+                                //java.bean包中带的方法,获取默认类名
+                                String beanName = component.value().equals("") ?
+                                        Introspector.decapitalize(aClass.getSimpleName()) : component.value();
 
                                 //获取生命周期
                                 String scope = "singleton";
@@ -67,7 +96,8 @@ public class WysApplicationContext<T> {
                                 beanDefinitionMap.put(beanName, beanDefinition);
                             }
 
-                        } catch (ClassNotFoundException e) {
+                        } catch (ClassNotFoundException | InvocationTargetException | InstantiationException |
+                                 IllegalAccessException | NoSuchMethodException e) {
                             throw new RuntimeException(e);
                         }
                     }
@@ -88,14 +118,48 @@ public class WysApplicationContext<T> {
     }
 
     private Object createBean(String beanName, BeanDefinition beanDefinition) {
-        return null;
-    }
 
-    private static String getBeanDefaultName(Class<?> aClass) {
-        String beanFullName = aClass.getName();
-        beanFullName = beanFullName.substring(beanFullName.lastIndexOf(".") + 1);
+        try {
+            Class<?> type = beanDefinition.getType();
+            Object instance = type.getConstructor().newInstance();
+            //简单依赖注入
+            for (Field field : type.getDeclaredFields()) {
+                if (field.isAnnotationPresent(AutoWired.class)) {
+                    field.setAccessible(true);
+                    String name = field.getName();
+                    Object fieldBean = getBean(name);
+                    field.set(instance, fieldBean);
+                }
+            }
 
-        return beanFullName.substring(0, 1).toLowerCase() + beanFullName.substring(1);
+            //spring感知接口
+            if (instance instanceof BeanNameAware) {
+                ((BeanNameAware) instance).setBeanName(beanName);
+            }
+
+            //bean初始化前处理
+            for (BeanPostProcessor postProcesses : BeanPostProcessorList) {
+                Object o = postProcesses.postProcessBeforeInitialization(instance, beanName);
+                if (o != null) {
+                    return o;
+                }
+            }
+
+            //自定义初始化调用
+            if (instance instanceof InitializingBean) {
+                ((InitializingBean) instance).afterPropertiesSet();
+            }
+
+            //bean初始化后处理
+            for (BeanPostProcessor postProcesses : BeanPostProcessorList) {
+                instance = postProcesses.postProcessAfterInitialization(instance, beanName);
+            }
+
+
+            return instance;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
     public void run() {

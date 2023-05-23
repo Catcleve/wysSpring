@@ -6,8 +6,9 @@ public class Test {
 
     public static void main(String[] args) {
         WysApplicationContext<ApplicationConfig> applicationContext = new WysApplicationContext<>(ApplicationConfig.class);
-        UserService bean = (UserService) applicationContext.getBean("userService1");
+        UserServiceInterface bean = (UserServiceInterface) applicationContext.getBean("userService");
         System.out.println("bean = " + bean);
+        bean.test();
     }
 
 }
